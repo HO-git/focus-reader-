@@ -75,6 +75,12 @@ let isContextViewActive = false;
 let originalText = "";
 let contextParagraphs = [];
 let currentParagraphIndex = 0;
+let wordSizePaceNormalization = 1;
+
+const WORD_SIZE_NEUTRAL_LENGTH = 5;
+const WORD_SIZE_PACE_SLOPE = 0.055;
+const WORD_SIZE_MIN_MULTIPLIER = 0.72;
+const WORD_SIZE_MAX_MULTIPLIER = 1.35;
 
 const PDF_WORKER_SRC =
   "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
@@ -313,6 +319,49 @@ function tokenize(text) {
   return text.trim().match(/\S+/g) ?? [];
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getWordCharacterCount(word) {
+  const lettersAndNumbers = word.match(/[A-Za-z0-9]/g);
+  return lettersAndNumbers ? lettersAndNumbers.length : 0;
+}
+
+function getRawWordSizeMultiplier(word) {
+  const charCount = getWordCharacterCount(word);
+  if (!charCount) {
+    return 1;
+  }
+  const unbounded = 1 + ((charCount - WORD_SIZE_NEUTRAL_LENGTH) * WORD_SIZE_PACE_SLOPE);
+  return clamp(unbounded, WORD_SIZE_MIN_MULTIPLIER, WORD_SIZE_MAX_MULTIPLIER);
+}
+
+function recalculateWordSizePaceNormalization() {
+  if (!words.length) {
+    wordSizePaceNormalization = 1;
+    return;
+  }
+  let totalMultiplier = 0;
+  for (const word of words) {
+    totalMultiplier += getRawWordSizeMultiplier(word);
+  }
+  const averageMultiplier = totalMultiplier / words.length;
+  if (!Number.isFinite(averageMultiplier) || averageMultiplier <= 0) {
+    wordSizePaceNormalization = 1;
+    return;
+  }
+  wordSizePaceNormalization = averageMultiplier;
+}
+
+function getWordSizePaceMultiplier(word) {
+  const rawMultiplier = getRawWordSizeMultiplier(word);
+  if (!Number.isFinite(wordSizePaceNormalization) || wordSizePaceNormalization <= 0) {
+    return rawMultiplier;
+  }
+  return rawMultiplier / wordSizePaceNormalization;
+}
+
 function updateReaderDocLabel() {
   if (!readerDoc) {
     return;
@@ -392,6 +441,7 @@ function applyDocumentState(doc, options = {}) {
   }
   originalText = doc ? (doc.text || "") : "";
   words = doc ? tokenize(doc.text || "") : [];
+  recalculateWordSizePaceNormalization();
   currentIndex = doc ? Math.min(doc.lastIndex || 0, words.length) : 0;
   updateStats();
   if (words.length) {
@@ -999,13 +1049,14 @@ function updateContextToggleVisibility() {
 
 function getDelay(word) {
   const baseDelay = 60000 / wpm;
+  const sizeAdjustedDelay = baseDelay * getWordSizePaceMultiplier(word);
   if (/[.!?]$/.test(word)) {
-    return baseDelay * 1.5;
+    return sizeAdjustedDelay * 1.5;
   }
   if (/[,:;]$/.test(word)) {
-    return baseDelay * 1.2;
+    return sizeAdjustedDelay * 1.2;
   }
-  return baseDelay;
+  return sizeAdjustedDelay;
 }
 
 function scheduleNext() {
@@ -1038,6 +1089,7 @@ async function startReading() {
   if (!words.length) {
     originalText = textInput.value;
     words = tokenize(textInput.value);
+    recalculateWordSizePaceNormalization();
     currentIndex = 0;
     updateStats();
   }
@@ -1395,6 +1447,7 @@ textInput.addEventListener("input", () => {
   }
   originalText = textInput.value;
   words = tokenize(textInput.value);
+  recalculateWordSizePaceNormalization();
   currentIndex = 0;
   hasStarted = false;
   updateStats();
